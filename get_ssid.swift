@@ -1,27 +1,17 @@
 // get_ssid.swift — print current Wi-Fi SSID on macOS without Location (TCC)
-// Version: 1.0.1
+// Version: 1.0.2
 //
 // This single-file tool prints the current Wi-Fi SSID on macOS **without**
-// requiring CoreLocation permissions. It avoids CoreWLAN and external
-// commands, and works on Big Sur or later by inferring the SSID from the
-// system “known networks” database plus the live network environment.
+// requiring CoreLocation permissions. It uses CoreWLAN if available, and
+// otherwise falls back to IORegistry and the known-networks database as a last resort.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // HOW IT WORKS (macOS ≥ 11)
 // ─────────────────────────────────────────────────────────────────────────────
-// 1) Read /Library/Preferences/com.apple.wifi.known-networks.plist (system scope).
-//    NOTE: reading this file normally requires root. You can either run as
-//    `sudo` or install once and setuid:
-//       sudo chown root ./get-ssid && sudo chmod +s ./get-ssid
-// 2) Read the current environment from SystemConfiguration’s dynamic store:
-//      • PrimaryService / PrimaryInterface
-//      • Service/<SID>/IPv4: Router (default route), InterfaceName
-//      • Service/<SID>/(DHCP|DHCPv4): ServerIdentifier
-// 3) Score candidates from the plist and pick the best match:
-//      • DHCP ServerIdentifier exact match  → score 0.85
-//      • Router IPv4 in IPv4NetworkSignature → score 0.70–0.72
-//      • Optional bonus if Wi-Fi channel matches (IORegistry)
-//    Ties are broken by most recent timestamps (LastAssociatedAt/UpdatedAt).
+// 1) CoreWLAN live: if associated, return CWInterface.ssid()
+// 2) CoreWLAN profiles: if associated and ssid() is redacted, use CWConfiguration.networkProfiles
+// 3) IORegistry (iface-only): limited lookup of IO80211SSID_STR (may be redacted)
+// 4) Known-networks plist (system scope) as a last resort if readable (may require root)
 //
 // For macOS ≤ 10, we fall back to IORegistry keys (IO80211SSID_STR / SSID_STR),
 // which may be redacted on modern systems.
@@ -73,6 +63,7 @@
 // SECURITY NOTES
 //   • The plist is opened with O_NOFOLLOW and owner checks.
 //   • Effective privileges are dropped (setgid/setuid) immediately after read.
+//    NOTE: reading this file normally requires root; if unreadable, this fallback is skipped.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -80,6 +71,9 @@ import Foundation
 import SystemConfiguration
 import IOKit
 import Darwin
+#if canImport(CoreWLAN)
+import CoreWLAN
+#endif
 
 // MARK: - ANSI colors for -v
 
@@ -115,27 +109,33 @@ public final class WiFiSSIDResolver {
     /// - Returns: SSID string, or nil if not resolvable.
     public static func getSSID(preferIface: String = "en0",
                                strictInterface: Bool = false) -> String? {
-        if osMajor() >= 11 {
-            if strictInterface && !isWiFiInterface(preferIface) {
-                // Explicit non-Wi-Fi → treat as not associated (no fallback).
+        let env = readDynamicEnv(preferIface: preferIface, lockToIface: strictInterface)
+#if canImport(CoreWLAN)
+        // Prefer a CoreWLAN interface bound to the chosen BSD name; otherwise default.
+        let client = CWWiFiClient.shared()
+        let cw = client.interface(withName: env.iface) ?? client.interface()
+        if let cw = cw {
+            // Only operate when actually associated; otherwise return nil to surface
+            // "Unknown (not associated)" at the CLI layer.
+            if cwIsAssociated(cw) {
+                if let ssid = cw.ssid(), !ssid.isEmpty {
+                    return normalizeSSID(ssid)
+                }
+                if let s = ssidFromProfiles(cw) { return s }
+                if let s = ssidFromIORegistry_ifaceOnly(iface: env.iface), !s.isEmpty { return s }
+                // Final resort on modern macOS: known-networks inference if readable.
+                if let s = inferSSIDFromKnownNetworks(preferIface: env.iface, lockToIface: true), !s.isEmpty {
+                    return s
+                }
+                return nil
+            } else {
+                // Not associated: do not infer from profiles or plist.
                 return nil
             }
-            if let s = inferSSIDFromKnownNetworks(preferIface: preferIface,
-                                                  lockToIface: strictInterface),
-               !s.isEmpty { return s }
-
-            if strictInterface {
-                // In strict mode, limit IORegistry to that iface node.
-                if let s = ssidFromIORegistry_ifaceOnly(iface: preferIface), !s.isEmpty { return s }
-                return nil
-            }
-            // Non-strict: legacy IORegistry fallback.
-            if let s = ssidFromIORegistry(iface: preferIface), !s.isEmpty { return s }
-            return nil
-        } else {
-            // Older systems: IORegistry only.
-            return ssidFromIORegistry(iface: preferIface)
         }
+#endif
+        // No CoreWLAN available: attempt an iface-only IORegistry lookup (may be redacted).
+        return ssidFromIORegistry_ifaceOnly(iface: env.iface)
     }
 
     // MARK: Common utils
@@ -747,6 +747,27 @@ public final class WiFiSSIDResolver {
 
         return lines.joined(separator: "\n")
     }
+
+#if canImport(CoreWLAN)
+    // CoreWLAN helpers used by getSSID()
+    @inline(__always)
+    private static func cwIsAssociated(_ cw: CWInterface) -> Bool {
+        if let s = cw.ssid(), !s.isEmpty { return true }
+        if let b = cw.bssid(), !b.isEmpty { return true }
+        if let ch = cw.wlanChannel(), ch.channelNumber > 0 { return true }
+        return false
+    }
+
+    /// Best-effort SSID via CoreWLAN profiles when CWInterface.ssid() is redacted.
+    @inline(__always)
+    private static func ssidFromProfiles(_ cw: CWInterface) -> String? {
+        guard let set = cw.configuration()?.networkProfiles else { return nil }
+        for case let p as CWNetworkProfile in set {
+            if let s = p.ssid, !s.isEmpty { return s }
+        }
+        return nil
+    }
+#endif
 }
 
 // MARK: - CLI
@@ -754,7 +775,7 @@ public final class WiFiSSIDResolver {
 @main
 struct GetSSIDCLI {
     private static let toolName = "get-ssid"
-    private static let version  = "1.0.1"
+    private static let version  = "1.0.2"
 
     private enum Mode { case run, help, version }
 
@@ -830,7 +851,7 @@ struct GetSSIDCLI {
 
     private static func printHelp() {
         let s = [
-            "\(toolName) — print current Wi-Fi SSID without Location permission",
+            "\(toolName) — print the current Wi‑Fi SSID without Location/TCC",
             "",
             "USAGE:",
             "  \(toolName) [options] [iface]",
@@ -844,18 +865,24 @@ struct GetSSIDCLI {
             "ARGS:",
             "  iface            BSD interface name (default: en0)",
             "",
+            "BEHAVIOR:",
+            "  • No Location permission, no sudo, no external commands.",
+            "  • Without an iface, the active Wi‑Fi service is selected.",
+            "  • With an explicit iface, strict mode is used (bind to that service).",
+            "    If a tunnel (utun*) is provided, it is mapped to the active Wi‑Fi service.",
+            "",
             "EXIT CODES:",
             #"  0  success (including "Unknown (not associated)")"#,
             "  2  usage error",
             "  3  interface not found (when iface explicitly provided)",
             "",
             "NOTES:",
-            "  • macOS ≥ 11: correlates DHCP/Router with the system known-networks database:",
-            "      /Library/Preferences/com.apple.wifi.known-networks.plist",
-            "    (reading that file usually requires root or a setuid binary).",
-            "  • macOS ≤ 10: falls back to IORegistry (IO80211SSID_STR / IO80211SSID / SSID_STR).",
-            "  • Explicit wired interfaces print \"Unknown (not associated)\"; this is not an error.",
-            "  • No CoreLocation / No CoreWLAN / No external commands."
+            "  macOS 11+: CoreWLAN (live) → CoreWLAN profiles → IORegistry (iface) →",
+            "             known‑networks correlation (only if the plist is readable).",
+            "             The tool never escalates privileges; the plist read is skipped",
+            "             when not accessible.",
+            "  macOS 10.x: IORegistry (IO80211SSID_STR / IO80211SSID / SSID_STR).",
+            "  Wired or not‑associated Wi‑Fi prints \"Unknown (not associated)\"."
         ].joined(separator: "\n")
         print(s)
     }
@@ -865,3 +892,9 @@ struct GetSSIDCLI {
         exit(2)
     }
 }
+
+
+
+
+
+

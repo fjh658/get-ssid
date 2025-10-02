@@ -21,6 +21,7 @@
 /* Begin PBXFileReference section */
 		525E92262E7BA2F900581528 /* get-ssid.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "get-ssid.xcodeproj"; sourceTree = "<group>"; };
 		525E923D2E7BA45600581528 /* get-ssid.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "get-ssid.xcodeproj"; sourceTree = "<group>"; };
+		5261DC0E2E8E3CCF00FB3D44 /* get-ssid.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "get-ssid.xcodeproj"; sourceTree = "<group>"; };
 		52B329E92E7B968800170783 /* get-ssid */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "get-ssid"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -49,6 +50,11 @@
 			sourceTree = "<group>";
 		};
 		525E92422E7BA45600581528 /* Products */ = {
+			isa = PBXGroup;
+			name = Products;
+			sourceTree = "<group>";
+		};
+		5261DC132E8E3CCF00FB3D44 /* Products */ = {
 			isa = PBXGroup;
 			name = Products;
 			sourceTree = "<group>";
@@ -129,6 +135,10 @@
 				{
 					ProductGroup = 525E922B2E7BA2F900581528 /* Products */;
 					ProjectRef = 525E92262E7BA2F900581528 /* get-ssid.xcodeproj */;
+				},
+				{
+					ProductGroup = 5261DC132E8E3CCF00FB3D44 /* Products */;
+					ProjectRef = 5261DC0E2E8E3CCF00FB3D44 /* get-ssid.xcodeproj */;
 				},
 			);
 			projectRoot = "";

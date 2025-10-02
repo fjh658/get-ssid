@@ -25,8 +25,6 @@ universal: x86_64 arm64
 	@lipo -create -output ./$(BIN_NAME) /tmp/$(BIN_NAME)-x86_64 /tmp/$(BIN_NAME)-arm64
 	@chmod +x ./$(BIN_NAME)
 	@echo "✅ Done: ./$(BIN_NAME)"
-	@echo "⚠️  Optional (drop Location / read system plist w/o sudo for the binary only):"
-	@echo "    sudo chown root ./$(BIN_NAME) && sudo chmod +s ./$(BIN_NAME)"
 
 clean:
 	@rm -f ./$(BIN_NAME)
