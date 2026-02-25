@@ -24,7 +24,7 @@
 //   still select the Wi-Fi service so the tool behaves like users expect.
 // • Explicit iface given (e.g. `get-ssid utun6`) → strict mode: we bind to that
 //   service only. If it’s a tunnel, we map it to the active Wi-Fi service.
-//   Passing a wired iface is not an error; we’ll print “Unknown (not associated)”.
+//   A non-Wi-Fi iface is treated as a usage error (exit 2).
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI
@@ -38,6 +38,7 @@
 //
 // Exit codes:
 //   0  success (including “Unknown (not associated)”)
+//   1  internal safety failure (e.g., privilege drop failed)
 //   2  usage error
 //   3  interface not found (when iface explicitly provided)
 //
@@ -113,7 +114,9 @@ public final class WiFiSSIDResolver {
 #if canImport(CoreWLAN)
         // Prefer a CoreWLAN interface bound to the chosen BSD name; otherwise default.
         let client = CWWiFiClient.shared()
-        let cw = client.interface(withName: env.iface) ?? client.interface()
+        let cw = strictInterface
+            ? client.interface(withName: env.iface)
+            : (client.interface(withName: env.iface) ?? client.interface())
         if let cw = cw {
             // Only operate when actually associated; otherwise return nil to surface
             // "Unknown (not associated)" at the CLI layer.
@@ -121,10 +124,12 @@ public final class WiFiSSIDResolver {
                 if let ssid = cw.ssid(), !ssid.isEmpty {
                     return normalizeSSID(ssid)
                 }
+                // Design choice: prefer no-sudo runtime path first.
+                // known-networks remains a privileged last resort for forward compatibility.
                 if let s = ssidFromProfiles(cw) { return s }
                 if let s = ssidFromIORegistry_ifaceOnly(iface: env.iface), !s.isEmpty { return s }
                 // Final resort on modern macOS: known-networks inference if readable.
-                if let s = inferSSIDFromKnownNetworks(preferIface: env.iface, lockToIface: true), !s.isEmpty {
+                if let s = inferSSIDFromKnownNetworks(env: env), !s.isEmpty {
                     return s
                 }
                 return nil
@@ -140,22 +145,18 @@ public final class WiFiSSIDResolver {
 
     // MARK: Common utils
 
-    @inline(__always) private static func osMajor() -> Int {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-    }
-
     /// Single IOKit port (avoid availability warnings).
     @inline(__always) private static func ioPort() -> mach_port_t {
         mach_port_t(MACH_PORT_NULL)
     }
 
-    @inline(__always) private static func normalizeSSID(_ s: String) -> String {
+    @inline(__always) static func normalizeSSID(_ s: String) -> String {
         s.replacingOccurrences(of: "’", with: "'")
          .replacingOccurrences(of: "‘", with: "'")
          .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func ipv4ToData(_ dotted: String) -> Data? {
+    static func ipv4ToData(_ dotted: String) -> Data? {
         var a = in_addr()
         if inet_aton(dotted, &a) == 1 {
             var n = a.s_addr // network byte order
@@ -198,10 +199,10 @@ public final class WiFiSSIDResolver {
     }
 
     /// Utility: is a BSD iface a tunnel? (e.g. utun6)
-    @inline(__always) private static func isTunnelInterface(_ name: String) -> Bool { name.hasPrefix("utun") }
+    @inline(__always) static func isTunnelInterface(_ name: String) -> Bool { name.hasPrefix("utun") }
 
     /// Check if a BSD iface is Wi-Fi via SCNetworkInterface
-    private static func isWiFiInterface(_ iface: String) -> Bool {
+    static func isWiFiInterface(_ iface: String) -> Bool {
         guard let all = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else { return false }
         for intf in all {
             if let name = SCNetworkInterfaceGetBSDName(intf) as String?, name == iface {
@@ -327,7 +328,9 @@ public final class WiFiSSIDResolver {
                 if let d = v as? Data, let ip = ipFromBytes4(d) { return (ip, "store:\(k)") }
                 if let a = v as? [UInt8], let ip = ipFromBytes4(a) { return (ip, "store:\(k)") }
                 if let n = v as? NSNumber {
-                    // interpret as big-endian u32
+                    // NSNumber stores raw network-byte-order (big-endian) bytes as a
+                    // host-order uint32; .bigEndian swaps back so we can extract octets
+                    // MSB-first to reconstruct the dotted-decimal IP.
                     let x = n.uint32Value.bigEndian
                     let b0 = UInt8((x >> 24) & 0xff), b1 = UInt8((x >> 16) & 0xff)
                     let b2 = UInt8((x >>  8) & 0xff), b3 = UInt8(x & 0xff)
@@ -366,11 +369,6 @@ public final class WiFiSSIDResolver {
             }
         }
 
-        if env.routerIPv4 == nil,
-           let v4 = scCopyDict(store, "State:/Network/Service/\(sid)/IPv4") {
-            env.routerIPv4 = v4["Router"] as? String
-        }
-        
         // Fallback A: read from lease files (root)
         if env.dhcpServerIPv4 == nil, let fromLease = dhcpServerFromLeaseFiles(iface: env.iface) {
             env.dhcpServerIPv4 = fromLease
@@ -452,32 +450,12 @@ public final class WiFiSSIDResolver {
         return nil
     }
 
-    private static func findPropAnywhere(keys: [String]) -> Any? {
-        var iter: io_iterator_t = 0
-        let kr = IORegistryCreateIterator(ioPort(), kIOServicePlane, IOOptionBits(kIORegistryIterateRecursively), &iter)
-        guard kr == KERN_SUCCESS, iter != 0 else { return nil }
-        defer { IOObjectRelease(iter) }
-        while true {
-            let e = IOIteratorNext(iter); if e == 0 { break }
-            if let d = copyProps(e), let v = valueForKeys(in: d, keys: keys) {
-                IOObjectRelease(e); return v
-            }
-            IOObjectRelease(e)
-        }
-        return nil
-    }
-
     private static func currentWiFiChannel(_ iface: String) -> Int? {
         let keys = ["IO80211Channel", "Channel"]
         let svc = ioFindServiceForBSDName(iface)
-        if svc != 0 {
-            defer { IOObjectRelease(svc) }
-            if let v = findPropOnEntryOrParents(svc, keys: keys) {
-                if let n = v as? NSNumber { return n.intValue }
-                if let s = v as? String, let n = Int(s) { return n }
-            }
-        }
-        if let v = findPropAnywhere(keys: keys) {
+        guard svc != 0 else { return nil }
+        defer { IOObjectRelease(svc) }
+        if let v = findPropOnEntryOrParents(svc, keys: keys) {
             if let n = v as? NSNumber { return n.intValue }
             if let s = v as? String, let n = Int(s) { return n }
         }
@@ -500,51 +478,53 @@ public final class WiFiSSIDResolver {
         return nil
     }
 
-    /// IORegistry lookup that also allows a global plane scan as a last resort.
-    private static func ssidFromIORegistry(iface: String) -> String? {
-        if let s = ssidFromIORegistry_ifaceOnly(iface: iface) { return s }
-        let keys = ["IO80211SSID_STR", "IO80211SSID", "SSID_STR"]
-        if let v = findPropAnywhere(keys: keys) {
-            if let s = v as? String, !s.isEmpty, s != "<SSID Redacted>" { return normalizeSSID(s) }
-            if let d = v as? Data, !d.isEmpty,
-               let s = String(data: d, encoding: .utf8), !s.isEmpty, s != "<SSID Redacted>" {
-                return normalizeSSID(s)
-            }
-        }
-        return nil
+    // MARK: Known-networks inference (macOS ≥ 11)
+
+    /// Drop to real uid/gid and verify.
+    @inline(__always) private static func dropEffectivePrivileges() -> Bool {
+        let rgid = getgid()
+        let ruid = getuid()
+        guard setgid(rgid) == 0 else { return false }
+        guard setuid(ruid) == 0 else { return false }
+        return getegid() == rgid && geteuid() == ruid
     }
 
-    // MARK: Known-networks inference (macOS ≥ 11)
+    /// Fail closed if we cannot drop privileges in a setuid/sudo path.
+    private static func fatalPrivilegeDropFailure() -> Never {
+        fputs("error: failed to drop effective privileges; aborting for safety\n", stderr)
+        exit(1)
+    }
 
     /// Safely read /Library/Preferences/com.apple.wifi.known-networks.plist
     private static func secureReadKnownNetworks() -> Data? {
         let path = "/Library/Preferences/com.apple.wifi.known-networks.plist"
-        let O_CLOEXEC = Int32(0x01000000), O_NOFOLLOW = Int32(0x00000100)
+        @inline(__always)
+        func finish(_ value: Data?) -> Data? {
+            if !dropEffectivePrivileges() { fatalPrivilegeDropFailure() }
+            return value
+        }
+
         let fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        if fd < 0 { return nil }
+        if fd < 0 { return finish(nil) }
         defer { close(fd) }
 
         var st = stat()
-        if fstat(fd, &st) != 0 { return nil }
-        if (st.st_mode & S_IFMT) != S_IFREG || st.st_uid != 0 { return nil }
+        if fstat(fd, &st) != 0 { return finish(nil) }
+        if (st.st_mode & S_IFMT) != S_IFREG || st.st_uid != 0 { return finish(nil) }
 
         var out = Data()
         var buf = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
             let n = read(fd, &buf, buf.count)
             if n == 0 { break }
-            if n < 0 { return nil }
+            if n < 0 { return finish(nil) }
             out.append(buf, count: n)
         }
-        // Drop effective privileges ASAP.
-        _ = setgid(getgid()); _ = setuid(getuid())
-        return out
+        return finish(out)
     }
 
     /// Inference using known-networks plist and the current environment.
-    private static func inferSSIDFromKnownNetworks(preferIface: String,
-                                                   lockToIface: Bool) -> String? {
-        let env = readDynamicEnv(preferIface: preferIface, lockToIface: lockToIface)
+    private static func inferSSIDFromKnownNetworks(env: NetEnv) -> String? {
         let iface = env.iface
         let curChannel = currentWiFiChannel(iface)
         let dhcpPacked = env.dhcpServerIPv4.flatMap(ipv4ToData)
@@ -631,16 +611,13 @@ public final class WiFiSSIDResolver {
 
     /// Map ServiceID to (name, device-hint)
     private static func lookupServiceNameDevice(_ sid: String, store: SCDynamicStore) -> (String?, String?) {
-        if let setup = SCDynamicStoreCopyValue(store, "Setup:/Network/Service/\(sid)" as CFString) as? [String: Any] {
-            let name = setup["UserDefinedName"] as? String
-            var dev: String? = nil
-            if let iface = setup["Interface"] as? [String: Any] {
-                if let d = iface["DeviceName"] as? String { dev = d }
-                else if let hw = iface["Hardware"] as? String { dev = hw }
-            }
-            return (name, dev)
+        let name = (SCDynamicStoreCopyValue(store, "Setup:/Network/Service/\(sid)" as CFString) as? [String: Any])?["UserDefinedName"] as? String
+        var dev: String? = nil
+        if let iface = SCDynamicStoreCopyValue(store, "Setup:/Network/Service/\(sid)/Interface" as CFString) as? [String: Any] {
+            if let d = iface["DeviceName"] as? String { dev = d }
+            else if let hw = iface["Hardware"] as? String { dev = hw }
         }
-        return (nil, nil)
+        return (name, dev)
     }
 
     private static func sidShort(_ s: String) -> String { s.count > 8 ? String(s.prefix(8)) : s }
@@ -673,13 +650,19 @@ public final class WiFiSSIDResolver {
             for sid in order {
                 let (nameOpt, devOpt) = lookupServiceNameDevice(sid, store: store)
                 guard let name = nameOpt ?? devOpt else { continue } // UI does not show missing Setup nodes
-                var ifn = "-"
+                var ifn = devOpt ?? "-"
+                var up = false
                 if let v4 = scCopyDict(store, "State:/Network/Service/\(sid)/IPv4"),
-                   let iname = v4["InterfaceName"] as? String { ifn = iname }
-                let row = String(format: "│  %2d. %@ (%@)  [%@]",
+                   let addrs = v4["Addresses"] as? [String], !addrs.isEmpty {
+                    if let iname = v4["InterfaceName"] as? String { ifn = iname }
+                    up = true
+                }
+                let status = up ? Ansi.green("up") : Ansi.dim("off")
+                let row = String(format: "│  %2d. %@ (%@) %@  [%@]",
                                  n,
                                  Ansi.green(name) as NSString,
                                  Ansi.cyan(ifn) as NSString,
+                                 status as NSString,
                                  Ansi.dim(sidShort(sid)) as NSString)
                 lines.append(row)
                 n += 1
@@ -772,7 +755,9 @@ public final class WiFiSSIDResolver {
 
 // MARK: - CLI
 
+#if !TESTING
 @main
+#endif
 struct GetSSIDCLI {
     private static let toolName = "get-ssid"
     private static let version  = "1.0.2"
@@ -790,6 +775,9 @@ struct GetSSIDCLI {
             if ifaceWasExplicit && !interfaceExists(iface) {
                 fputs("error: interface '\(iface)' not found\n", stderr)
                 exit(3)
+            }
+            if ifaceWasExplicit && !iface.hasPrefix("utun") && !WiFiSSIDResolver.isWiFiInterface(iface) {
+                fail("interface '\(iface)' is not a Wi-Fi interface (strict mode)")
             }
             if verbose {
                 let diag = WiFiSSIDResolver.verboseSnapshot(preferIface: iface, strictInterface: ifaceWasExplicit)
@@ -866,13 +854,17 @@ struct GetSSIDCLI {
             "  iface            BSD interface name (default: en0)",
             "",
             "BEHAVIOR:",
-            "  • No Location permission, no sudo, no external commands.",
+            "  • No Location permission, no external commands.",
+            "  • Usually no sudo; elevation is only needed if known-networks",
+            "    fallback is required and the plist is not readable.",
             "  • Without an iface, the active Wi‑Fi service is selected.",
             "  • With an explicit iface, strict mode is used (bind to that service).",
             "    If a tunnel (utun*) is provided, it is mapped to the active Wi‑Fi service.",
+            "  • Explicit non-Wi‑Fi iface in strict mode exits with code 2.",
             "",
             "EXIT CODES:",
             #"  0  success (including "Unknown (not associated)")"#,
+            "  1  internal safety failure (privilege drop failed)",
             "  2  usage error",
             "  3  interface not found (when iface explicitly provided)",
             "",
@@ -882,7 +874,7 @@ struct GetSSIDCLI {
             "             The tool never escalates privileges; the plist read is skipped",
             "             when not accessible.",
             "  macOS 10.x: IORegistry (IO80211SSID_STR / IO80211SSID / SSID_STR).",
-            "  Wired or not‑associated Wi‑Fi prints \"Unknown (not associated)\"."
+            "  Not‑associated Wi‑Fi prints \"Unknown (not associated)\"."
         ].joined(separator: "\n")
         print(s)
     }
@@ -892,9 +884,3 @@ struct GetSSIDCLI {
         exit(2)
     }
 }
-
-
-
-
-
-

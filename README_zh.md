@@ -2,18 +2,18 @@
 
 [English](./README.md) | **中文**
 
-> 🧩 **目标**：在 macOS 11+（含“macOS 26”）上，在**不启用定位权限**、**不依赖** CoreLocation/CoreWLAN/外部命令的前提下，输出当前 Wi‑Fi 的 SSID。
+> 🧩 **目标**：在 macOS 11+（含“macOS 26”）上，在**不启用定位权限**（TCC）、**不依赖定位受限 CLI** 的前提下，输出当前 Wi‑Fi 的 SSID。
 
 ---
 
 ## 概览 ✨
 
-在新版 macOS 中，许多 SSID 获取途径都被 **定位权限（TCC）** 限制。关闭定位后，这些工具会**隐藏**或**拒绝**返回 SSID。**get‑ssid** 不调用会触发 TCC 的 API，而是把当前网络环境与**系统已知网络**数据库进行**关联匹配**来推断 SSID。
+在新版 macOS 中，许多 SSID 获取途径都被 **定位权限（TCC）** 限制。关闭定位后，这些工具会**隐藏**或**拒绝**返回 SSID。**get‑ssid** 会先走不依赖定位授权的 CoreWLAN/IORegistry 路径，再在必要时把当前网络环境与**系统已知网络**数据库做**关联匹配**来推断 SSID。
 
 **要点**  
-- 不用 CoreLocation / CoreWLAN / 外部命令。  
-- 利用 SystemConfiguration（DHCP/Router）+ 系统 known‑networks plist；可选从 IORegistry 读取信道作加分项。  
-- 读取系统级 plist 需要 **root** → 每次 **`sudo`** 或**一次性 setuid**。
+- 不用 CoreLocation / 外部命令。  
+- 组合使用 CoreWLAN（实时/配置）、IORegistry、SystemConfiguration（DHCP/Router）。  
+- known‑networks plist 仅作为最后兜底，若当前用户不可读则可能需要 `sudo`。
 
 ---
 
@@ -66,14 +66,14 @@ WIFI
 
 ## 实现原理 🧠
 
-- **macOS ≥ 11**（含“macOS 26”）：  
-  1) 读取系统级 `/Library/Preferences/com.apple.wifi.known-networks.plist`；  
-  2) 从 **SystemConfiguration** 获取当前环境：  
-     - DHCP **ServerIdentifier**（强匹配）  
-     - `IPv4NetworkSignature` 中的 **Router**（中匹配）  
-     - 可选：从 **IORegistry** 读取 **channel**（加分项）  
-  3) 候选打分；以**最近关联时间**打破并列，得到 SSID。  
-- **macOS ≤ 10**：若可用，回退到 IORegistry（`IO80211SSID_STR` / `SSID_STR`）。
+- **默认路径（当前 macOS）：**  
+  1) 优先走 CoreWLAN 实时关联（`CWInterface.ssid()`）；  
+  2) 退化到 CoreWLAN 配置（`networkProfiles`）；  
+  3) 再退化到接口范围 IORegistry SSID 键（`IO80211SSID_STR` / `IO80211SSID` / `SSID_STR`）；  
+  4) 最后兜底：用 SystemConfiguration（DHCP/Router）与 `/Library/Preferences/com.apple.wifi.known-networks.plist` 做相关性推断。  
+- **仅 known-networks 阶段：**进行候选打分，并以**最近关联时间**打破并列。
+- **当 CoreWLAN 不可用时：**直接回退到接口范围 IORegistry 查询。
+- 优先级策略：默认优先非提权路径；只有必要时才走 known-networks 兼容兜底。
 
 ---
 
@@ -82,49 +82,54 @@ WIFI
 > 需安装 Xcode Command Line Tools；源码文件：`get_ssid.swift`
 
 ```bash
-# x86_64 架构（最低 10.13）
-xcrun swiftc -parse-as-library -O   -target x86_64-apple-macos10.13   -o /tmp/get-ssid-x86_64 get_ssid.swift
+# 推荐：通过 Makefile 构建通用二进制
+make universal
 
-# arm64 架构（最低 11.0）
-xcrun swiftc -parse-as-library -O   -target arm64-apple-macos11.0   -o /tmp/get-ssid-arm64 get_ssid.swift
-
-# 合并为通用二进制
-lipo -create -output ./get-ssid   /tmp/get-ssid-x86_64 /tmp/get-ssid-arm64
-
-# 若被 Gatekeeper 隔离（可选）
-xattr -dr com.apple.quarantine ./get-ssid
+# 运行测试（单元 + 集成）
+make test
 ```
+
+---
+
+## 🍺 Homebrew Tap 安装
+
+Homebrew 安装会使用 `dist/` 中的预编译包，不会在用户机器上编译。
+
+本地把当前仓库作为 tap：
+
+```bash
+brew tap fjh658/get-ssid /path/to/get-ssid
+brew install get-ssid
+```
+
+从 GitHub tap 安装：
+
+```bash
+brew tap fjh658/get-ssid https://github.com/fjh658/get-ssid.git
+brew install get-ssid
+```
+
+发布前刷新预编译包：
+
+```bash
+make package
+```
+
+`make package` 还会基于 `Formula/get-ssid.rb.tmpl` 自动刷新 `Formula/get-ssid.rb`，并注入当前版本（来自 `get_ssid.swift`）与 tarball 的 `sha256`。
 
 ---
 
 ## 安装与提权 📦
 
-读取系统级 plist **必须**有 root。二选一：
+通过 Homebrew 安装后，直接运行 `get-ssid` 即可。
+在当前 macOS API 行为不变的前提下，不需要 `sudo`。
 
-### 方案 A — 每次用 `sudo`（简单，推荐）
+只有你明确需要 known-networks 兜底，且系统 plist 对当前用户不可读时，才按需重试一次 `sudo`：
+
 ```bash
-sudo ./get-ssid en0
-# MyWiFi-5G
-```
-
-### 方案 B — 一次性授予 setuid（谨慎）
-> ⚠️ 会增加攻击面。请保证二进制最小化、已审计、只读且路径固定。
-
-**你要求的最小命令：**
-```bash
-sudo chown root ./get-ssid && sudo chmod +s ./get-ssid
-./get-ssid en0
-# MyWiFi-5G
-```
-
-**更规范（安装到 /usr/local/bin）：**
-```bash
-sudo install -m 0755 get-ssid /usr/local/bin/get-ssid
-sudo chown root:wheel /usr/local/bin/get-ssid
-sudo chmod u+s /usr/local/bin/get-ssid
-
 get-ssid en0
-# MyWiFi-5G
+# 若确实需要兜底：
+sudo get-ssid en0
 ```
 
 ---
@@ -132,21 +137,22 @@ get-ssid en0
 ## 使用方法 🚀
 
 ```bash
-# 默认：使用主数据接口（Global/IPv4）
-sudo ./get-ssid
+# 默认：自动选择活跃 Wi‑Fi 服务
+get-ssid
 # MyWiFi-5G
 
 # 严格绑定到指定接口（例如 en0）
-sudo ./get-ssid en0
+get-ssid en0
 # MyWiFi-5G
 
 # 帮助 / 版本
-./get-ssid --help
-./get-ssid --version
+get-ssid --help
+get-ssid --version
 ```
 
 **行为说明**  
-- 显式传入**有线接口**：输出 `Unknown (not associated)`，退出码 `0`（非错误）。  
+- 显式传入**非 Wi‑Fi 接口**（strict 模式）：返回 `error: interface '<iface>' is not a Wi-Fi interface (strict mode)`，退出码 `2`。  
+- Wi‑Fi 接口但当前未关联：输出 `Unknown (not associated)`，退出码 `0`（非错误）。  
 - **不存在的接口名**：退出码 `3`。  
 - **用法错误**：退出码 `2`。
 
@@ -154,6 +160,7 @@ sudo ./get-ssid en0
 | Code | 含义                               |
 |-----:|------------------------------------|
 | 0    | 成功（含 “Unknown …”）             |
+| 1    | 内部安全错误                       |
 | 2    | 用法错误                           |
 | 3    | 接口不存在（显式指定时）           |
 
@@ -169,8 +176,9 @@ sudo ./get-ssid en0
 
 ## 局限 ⚠️
 
-- 当前网络若**未保存**到系统“已知网络”，或 DHCP/Router 特征**不具区分度**，推断可能失败。  
-- Apple 未来可能调整 plist 格式/字段，无法保证长期可用。
+- 这些限制仅在 `networkProfiles`/IORegistry 未能给出 SSID、且工具进入 known-networks 相关性兜底时才会触发。  
+- 在该兜底阶段，若当前网络**未保存**到系统“已知网络”，或 DHCP/Router 特征**不具区分度**，推断可能失败。  
+- Apple 未来可能调整 plist 格式/字段，这会影响该兜底路径。
 
 ---
 

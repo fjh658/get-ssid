@@ -19,9 +19,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		525E92262E7BA2F900581528 /* get-ssid.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "get-ssid.xcodeproj"; sourceTree = "<group>"; };
-		525E923D2E7BA45600581528 /* get-ssid.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "get-ssid.xcodeproj"; sourceTree = "<group>"; };
-		5261DC0E2E8E3CCF00FB3D44 /* get-ssid.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "get-ssid.xcodeproj"; sourceTree = "<group>"; };
+		528EA8192F4DA419001A31F2 /* get-ssid.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "get-ssid.xcodeproj"; sourceTree = "<group>"; };
+		528EA8F92F4EE2DE001A31F2 /* get-ssid.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = "get-ssid.xcodeproj"; sourceTree = "<group>"; };
 		52B329E92E7B968800170783 /* get-ssid */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "get-ssid"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -44,17 +43,12 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		525E922B2E7BA2F900581528 /* Products */ = {
+		528EA81F2F4DA419001A31F2 /* Products */ = {
 			isa = PBXGroup;
 			name = Products;
 			sourceTree = "<group>";
 		};
-		525E92422E7BA45600581528 /* Products */ = {
-			isa = PBXGroup;
-			name = Products;
-			sourceTree = "<group>";
-		};
-		5261DC132E8E3CCF00FB3D44 /* Products */ = {
+		528EA8FE2F4EE2DE001A31F2 /* Products */ = {
 			isa = PBXGroup;
 			name = Products;
 			sourceTree = "<group>";
@@ -129,16 +123,12 @@
 			projectDirPath = "";
 			projectReferences = (
 				{
-					ProductGroup = 525E92422E7BA45600581528 /* Products */;
-					ProjectRef = 525E923D2E7BA45600581528 /* get-ssid.xcodeproj */;
+					ProductGroup = 528EA81F2F4DA419001A31F2 /* Products */;
+					ProjectRef = 528EA8192F4DA419001A31F2 /* get-ssid.xcodeproj */;
 				},
 				{
-					ProductGroup = 525E922B2E7BA2F900581528 /* Products */;
-					ProjectRef = 525E92262E7BA2F900581528 /* get-ssid.xcodeproj */;
-				},
-				{
-					ProductGroup = 5261DC132E8E3CCF00FB3D44 /* Products */;
-					ProjectRef = 5261DC0E2E8E3CCF00FB3D44 /* get-ssid.xcodeproj */;
+					ProductGroup = 528EA8FE2F4EE2DE001A31F2 /* Products */;
+					ProjectRef = 528EA8F92F4EE2DE001A31F2 /* get-ssid.xcodeproj */;
 				},
 			);
 			projectRoot = "";
@@ -213,7 +203,9 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				"MACOSX_DEPLOYMENT_TARGET[sdk=macosx*][arch=arm64]" = 11.0;
+				"MACOSX_DEPLOYMENT_TARGET[sdk=macosx*][arch=x86_64]" = 10.13;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -271,7 +263,9 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				"MACOSX_DEPLOYMENT_TARGET[sdk=macosx*][arch=arm64]" = 11.0;
+				"MACOSX_DEPLOYMENT_TARGET[sdk=macosx*][arch=x86_64]" = 10.13;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
@@ -283,8 +277,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = F377YS9A4R;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = Makefile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -296,8 +291,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = F377YS9A4R;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = Makefile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;

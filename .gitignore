@@ -1,2 +1,5 @@
 xcuserdata
 *.xcbkptlist
+.build/
+get-ssid
+get-ssid.zip

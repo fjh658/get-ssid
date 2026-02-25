@@ -2,18 +2,18 @@
 
 **English** | [中文](./README_zh.md)
 
-> 🧩 **Goal**: Print the current Wi‑Fi SSID on macOS 11+ (incl. “macOS 26”) **without** CoreLocation/CoreWLAN or Location‑gated CLIs.
+> 🧩 **Goal**: Print the current Wi‑Fi SSID on macOS 11+ (incl. “macOS 26”) **without** Location permission (TCC), and without Location‑gated CLIs.
 
 ---
 
 ## Overview ✨
 
-On modern macOS, many SSID sources are gated by **Location** permission (TCC). With Location **off**, tools will hide or refuse the SSID. **get‑ssid** avoids those APIs and instead **infers** the SSID by correlating the current network environment with the **system known‑networks** database.
+On modern macOS, many SSID sources are gated by **Location** permission (TCC). With Location **off**, tools will hide or refuse the SSID. **get‑ssid** first tries non-Location CoreWLAN/IORegistry paths, then (if needed) infers the SSID by correlating the current network environment with the **system known‑networks** database.
 
 **Highlights**  
-- No CoreLocation, no CoreWLAN, no external commands.  
-- Uses SystemConfiguration (DHCP/Router) + known‑networks plist; optional channel from IORegistry for tie‑breaking.  
-- Requires root to read the system plist → run with **`sudo`** or install once as **setuid**.
+- No CoreLocation, no external commands.  
+- Uses CoreWLAN (live/profile), IORegistry, and SystemConfiguration (DHCP/Router).  
+- known‑networks plist is a last resort and may require `sudo` if unreadable.
 
 ---
 
@@ -66,14 +66,14 @@ WIFI
 
 ## How it works 🧠
 
-- **macOS ≥ 11** (incl. “macOS 26”):  
-  1) Read system‑scope `/Library/Preferences/com.apple.wifi.known-networks.plist`.  
-  2) Capture current environment from **SystemConfiguration**:  
-     - DHCP **ServerIdentifier** (strong)  
-     - IPv4 **Router** in `IPv4NetworkSignature` (medium)  
-     - Optional **channel** via **IORegistry** (bonus)  
-  3) Score candidates; break ties by **most recent association timestamp**; return SSID.
-- **macOS ≤ 10**: Fallback to IORegistry keys (`IO80211SSID_STR` / `SSID_STR`) when available.
+- **Default path (current macOS):**  
+  1) CoreWLAN live association (`CWInterface.ssid()`) when available.  
+  2) CoreWLAN profile fallback (`networkProfiles`).  
+  3) Interface-scoped IORegistry SSID keys (`IO80211SSID_STR` / `IO80211SSID` / `SSID_STR`).  
+  4) Last resort: correlate SystemConfiguration (DHCP/Router) with `/Library/Preferences/com.apple.wifi.known-networks.plist`.
+- **known-networks stage only:** score candidates and break ties by **most recent association timestamp**.
+- **When CoreWLAN is unavailable:** direct fallback to interface-scoped IORegistry lookup.
+- Priority policy: keep default execution on non-privileged paths; use known-networks only as a compatibility fallback when needed.
 
 ---
 
@@ -82,49 +82,54 @@ WIFI
 > Requires Xcode Command Line Tools; source file: `get_ssid.swift`
 
 ```bash
-# x86_64 slice (min 10.13)
-xcrun swiftc -parse-as-library -O   -target x86_64-apple-macos10.13   -o /tmp/get-ssid-x86_64 get_ssid.swift
+# Recommended: build universal binary via Makefile
+make universal
 
-# arm64 slice (min 11.0)
-xcrun swiftc -parse-as-library -O   -target arm64-apple-macos11.0   -o /tmp/get-ssid-arm64 get_ssid.swift
-
-# merge into a universal binary
-lipo -create -output ./get-ssid   /tmp/get-ssid-x86_64 /tmp/get-ssid-arm64
-
-# If Gatekeeper quarantines the file (optional)
-xattr -dr com.apple.quarantine ./get-ssid
+# Run tests (unit + integration)
+make test
 ```
+
+---
+
+## 🍺 Homebrew Tap Install
+
+Homebrew install uses the prebuilt package in `dist/` and does not compile on the end-user machine.
+
+Tap this repository locally:
+
+```bash
+brew tap fjh658/get-ssid /path/to/get-ssid
+brew install get-ssid
+```
+
+Install from GitHub tap:
+
+```bash
+brew tap fjh658/get-ssid https://github.com/fjh658/get-ssid.git
+brew install get-ssid
+```
+
+Refresh prebuilt package before release:
+
+```bash
+make package
+```
+
+`make package` also refreshes `Formula/get-ssid.rb` from `Formula/get-ssid.rb.tmpl`, injecting the current version (from `get_ssid.swift`) and tarball `sha256`.
 
 ---
 
 ## Install & Privileges 📦
 
-Reading the system plist **requires root**. Pick **one**:
+For Homebrew installs, run `get-ssid` directly.
+As long as current macOS API behavior remains unchanged, `sudo` is not required.
 
-### Option A — Run with `sudo` each time *(simple, recommended)*
+Only when you explicitly need known‑networks fallback and the system plist is unreadable to the current user, retry once with `sudo`:
+
 ```bash
-sudo ./get-ssid en0
-# MyWiFi-5G
-```
-
-### Option B — Grant setuid once *(advanced; use with care)*
-> ⚠️ Increases attack surface. Keep the binary minimal, audited, immutable, and in a fixed path.
-
-**Minimal (as requested):**
-```bash
-sudo chown root ./get-ssid && sudo chmod +s ./get-ssid
-./get-ssid en0
-# MyWiFi-5G
-```
-
-**Preferred (install to /usr/local/bin):**
-```bash
-sudo install -m 0755 get-ssid /usr/local/bin/get-ssid
-sudo chown root:wheel /usr/local/bin/get-ssid
-sudo chmod u+s /usr/local/bin/get-ssid
-
 get-ssid en0
-# MyWiFi-5G
+# If fallback is needed:
+sudo get-ssid en0
 ```
 
 ---
@@ -132,21 +137,22 @@ get-ssid en0
 ## Usage 🚀
 
 ```bash
-# Default: use the primary data interface (Global/IPv4)
-sudo ./get-ssid
+# Default: use the active Wi-Fi service
+get-ssid
 # MyWiFi-5G
 
 # Strictly bind to a specific interface (e.g., en0)
-sudo ./get-ssid en0
+get-ssid en0
 # MyWiFi-5G
 
 # Help / Version
-./get-ssid --help
-./get-ssid --version
+get-ssid --help
+get-ssid --version
 ```
 
 **Behavior**  
-- Passing a *wired* interface prints `Unknown (not associated)` and exits `0` (not an error).  
+- Explicit non‑Wi‑Fi interface in strict mode exits `2` with `error: interface '<iface>' is not a Wi-Fi interface (strict mode)`.  
+- A Wi‑Fi interface that is not associated prints `Unknown (not associated)` and exits `0` (not an error).  
 - Non‑existent interface → exit `3`.  
 - Usage error → exit `2`.
 
@@ -154,6 +160,7 @@ sudo ./get-ssid en0
 | Code | Meaning                               |
 |-----:|----------------------------------------|
 | 0    | Success (incl. “Unknown …”)           |
+| 1    | Internal safety failure                |
 | 2    | Usage error                            |
 | 3    | Interface not found (when explicit)    |
 
@@ -169,8 +176,9 @@ sudo ./get-ssid en0
 
 ## Limitations ⚠️
 
-- If the network was **never saved** to system known‑networks, or DHCP/Router signals are ambiguous, inference may fail.  
-- Apple may change plist formats/fields in future releases.
+- These limits apply only when `networkProfiles`/IORegistry did not yield an SSID and the tool falls back to known‑networks correlation.  
+- In that fallback stage, if the network was **never saved** to system known‑networks, or DHCP/Router signals are ambiguous, inference may fail.  
+- Apple may change plist formats/fields in future releases, which would affect this fallback path.
 
 ---
 
